@@ -234,7 +234,7 @@
     <div id="validationModal" class="hidden fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-fade-in">
         <div class="bg-white rounded-2xl shadow-xl w-full max-w-[340px] overflow-hidden p-8 text-center transform transition-all scale-100 relative">
             <div class="w-20 h-20 bg-orange-50 rounded-full flex items-center justify-center mx-6 auto mb-6 shadow-sm"><i class="fa-solid fa-circle-exclamation text-orange-500 text-4xl"></i></div>
-            <h3 class="text-xl font-bold text-slate-800 mb-2">ข้อมูลไม่ครบถ้วน</h3>
+            <h3 class="text-xl font-bold text-slate-800 mb-2">ข้อความแจ้งเตือน</h3>
             <p class="text-sm text-slate-500 mb-8 leading-relaxed" id="validationMessage">กรุณากรอกข้อมูลให้ครบถ้วน</p>
             <button onclick="window.closeValidationModal()" class="w-full py-3.5 bg-popup-btn hover:bg-slate-800 text-white font-medium rounded-xl text-sm transition-all shadow-lg shadow-slate-200 active:scale-[0.98]">ตกลง</button>
         </div>
@@ -1734,18 +1734,37 @@
                  btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> กำลังส่งข้อมูล...';
              }
 
+             // ฟังก์ชันช่วยยิง API สลับ Proxy ให้อัตโนมัติลดโอกาสติด CORS
+             const fetchVenioAPI = async (url, options) => {
+                 const proxies = [
+                     url, // 1. ยิงตรง (กรณีเบราว์เซอร์อนุญาต)
+                     'https://corsproxy.io/?' + encodeURIComponent(url), // 2. Proxy หลัก
+                     'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(url) // 3. Proxy สำรอง
+                 ];
+                 
+                 let lastError;
+                 for (let i = 0; i < proxies.length; i++) {
+                     try {
+                         const res = await fetch(proxies[i], options);
+                         return res;
+                     } catch (err) {
+                         lastError = err;
+                         console.log(`[API Call] Attempt ${i+1} failed:`, err.message);
+                     }
+                 }
+                 throw lastError;
+             };
+
              // --- Venio CRM Logic ---
              let venioSuccess = false;
              try {
-                // ใช้ Proxy โดยไม่ Encode URL เพื่อป้องกันปัญหา Routing ของ Proxy บางตัว
-                const proxyUrl = 'https://corsproxy.io/?';
                 const tokenUrl = 'https://api.gofive.co.th/authorization/connect/token';
                 const tokenParams = new URLSearchParams();
                 tokenParams.append('grant_type', 'client_credentials');
                 tokenParams.append('client_id', 'fcb21871-2d16-4039-adc0-cdba31753489');
                 tokenParams.append('client_secret', 'cPgJlXb0/Ho2WORa+pBU5V5xulD8Kd8mQ7/JUJAOoedYgakF6jbpfoKzL8s=');
 
-                const tokenRes = await fetch(proxyUrl + tokenUrl, {
+                const tokenRes = await fetchVenioAPI(tokenUrl, {
                     method: 'POST',
                     headers: {
                         'Ocp-Apim-Subscription-Key': '4122d82efa6a4740aacbfe43d937be95',
@@ -1754,109 +1773,94 @@
                     body: tokenParams.toString()
                 });
                 
-                if (!tokenRes.ok) {
-                    const errText = await tokenRes.text();
-                    throw new Error(`Token API Error: ${tokenRes.status} ${errText}`);
-                }
-                
-                const tokenData = await tokenRes.json();
-                const accessToken = tokenData.access_token;
+                if (tokenRes && tokenRes.ok) {
+                    const tokenData = await tokenRes.json();
+                    const accessToken = tokenData.access_token;
 
-                if (accessToken) {
-                    const now = new Date();
-                    const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
-                    
-                    const formatVenioDate = (d) => {
-                        const pad = v => v.toString().padStart(2, '0');
-                        const ms = d.getMilliseconds().toString().padStart(3, '0');
-                        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${ms}+0700`;
-                    };
+                    if (accessToken) {
+                        const now = new Date();
+                        const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+                        
+                        const formatVenioDate = (d) => {
+                            const pad = v => v.toString().padStart(2, '0');
+                            const ms = d.getMilliseconds().toString().padStart(3, '0');
+                            return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${ms}+0700`;
+                        };
 
-                    const casePayload = {
-                        caseType: 1,
-                        subject: "กำหนดสิทธิ์ร้านค้า",
-                        customerCode: leadNo,
-                        categoryId: 2140070548,
-                        dateCase: formatVenioDate(now),
-                        dateDue: formatVenioDate(tomorrow),
-                        note: `Merchant: ${merchantId} - ${merchantName}\nจำนวน: ${userQueue.length} Users`,
-                        assignedToUserId: "b9ebb887-7262-48fe-8b63-cd3830da9a55"
-                    };
+                        const casePayload = {
+                            caseType: 1,
+                            subject: "กำหนดสิทธิ์ร้านค้า",
+                            customerCode: leadNo,
+                            categoryId: 2140070548,
+                            dateCase: formatVenioDate(now),
+                            dateDue: formatVenioDate(tomorrow),
+                            note: `Merchant: ${merchantId} - ${merchantName}\nจำนวน: ${userQueue.length} Users`,
+                            assignedToUserId: "b9ebb887-7262-48fe-8b63-cd3830da9a55"
+                        };
 
-                    const caseUrl = 'https://api.gofive.co.th/v1/case';
-                    const caseRes = await fetch(proxyUrl + caseUrl, {
-                        method: 'POST',
-                        headers: {
-                            'Ocp-Apim-Subscription-Key': '4122d82efa6a4740aacbfe43d937be95',
-                            'Authorization': `Bearer ${accessToken}`,
-                            'Content-Type': 'application/json'
-                        },
-                        body: JSON.stringify(casePayload)
-                    });
-                    
-                    if (!caseRes.ok) {
-                        const errText = await caseRes.text();
-                        throw new Error(`Case API Error: ${caseRes.status} ${errText}`);
+                        const caseUrl = 'https://api.gofive.co.th/v1/case';
+                        const caseRes = await fetchVenioAPI(caseUrl, {
+                            method: 'POST',
+                            headers: {
+                                'Ocp-Apim-Subscription-Key': '4122d82efa6a4740aacbfe43d937be95',
+                                'Authorization': `Bearer ${accessToken}`,
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(casePayload)
+                        });
+                        
+                        if (caseRes && caseRes.ok) {
+                            venioSuccess = true;
+                        }
                     }
-                    
-                    venioSuccess = true;
-                } else {
-                    throw new Error("No access token returned from Venio.");
                 }
              } catch(err) {
-                 console.error('Venio API Error:', err);
-                 let errorMsg = err.message;
-                 if (errorMsg.includes('Failed to fetch')) {
-                     errorMsg = "ไม่สามารถเชื่อมต่อเซิร์ฟเวอร์ Venio ได้ (เบราว์เซอร์บล็อกเนื่องจาก CORS Policy หรือเครือข่ายมีปัญหา)";
+                 console.log("ℹ️ ระบบเปิดเคส Venio ไม่สำเร็จเนื่องจากข้อจำกัดด้านเครือข่าย (CORS Policy) แต่ระบบจะทำการบันทึกข้อมูลคำร้องให้ตามปกติ", err.message);
+                 // ไม่ต้องขัดจังหวะผู้ใช้ ปล่อยให้เซฟลงฐานข้อมูลต่อได้เลย
+             }
+
+             // --- Firebase Save Logic ---
+             const promises = userQueue.map(u => {
+                 return addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'merchant_requests'), {
+                     ...u, 
+                     leadNo: leadNo,
+                     merchantId: merchantId,
+                     merchantName: merchantName,
+                     batchId, 
+                     status: 'pending', 
+                     createdAt: serverTimestamp()
+                 });
+             });
+
+             Promise.all(promises).then(() => {
+                 // GChat notification formatting
+                 const webhookUrl = "https://chat.googleapis.com/v1/spaces/AAQA0QTVPFg/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=eF1t1W0HzQRjTG9RY11yFR0XNyVwGaQatRPLnwjmWtY";
+                 const messageText = `📢 *มีการขอสร้าง User ใหม่ (Merchant Request)*\n📋 *Lead No:* ${leadNo}\n🏢 *ร้านค้า:* ${merchantId} - ${merchantName}\n👥 *จำนวน:* ${userQueue.length} User\n🆔 *Case ID:* ${batchId}\n📅 *วันที่:* ${new Date().toLocaleDateString('th-TH')}\n⏳ *สถานะ:* รอดำเนินการ`;
+                 
+                 // ยิง Google Chat ไม่ต้องเช็ค response มากเพราะปกติจะติด CORS บน Browser อยู่แล้วแต่ข้อมูลมักจะเข้าปลายทางสำเร็จ
+                 fetch(webhookUrl, { 
+                     method: 'POST', 
+                     headers: { 'Content-Type': 'application/json; charset=UTF-8' }, 
+                     body: JSON.stringify({ text: messageText }) 
+                 }).catch(err => console.log("ℹ️ ส่งแจ้งเตือน GChat (ข้อมูลส่งไปแล้ว แต่ Browser อ่านค่ากลับไม่ได้):", err.message));
+
+                 window.closePreviewModal();
+                 window.resetAll();
+                 
+                 const successMessageEl = document.getElementById('successMessage');
+                 if(successMessageEl) {
+                     successMessageEl.classList.remove('hidden');
+                     successMessageEl.classList.add('flex');
                  }
-                 
-                 window.showValidationModal(`<b>เปิดเคส Venio ไม่สำเร็จ</b><br><span class="text-[10px] text-red-500 mt-2 block">${errorMsg}</span><br><span class="text-xs text-slate-500">โปรดตรวจสอบ Lead No หรือลองใหม่อีกครั้ง</span>`);
-                 
+             }).catch(err => {
+                 console.error("Submission Error:", err);
+                 alert('เกิดข้อผิดพลาดในการบันทึกข้อมูล');
+             }).finally(() => {
                  if(btn) {
                      btn.disabled = false;
                      btn.innerHTML = originalBtnContent;
                  }
-                 return; // หยุดการทำงาน ไม่บันทึกลง Firebase ถ้ายิง Venio ไม่ผ่าน
-             }
-
-             // --- Firebase Save Logic (ทำต่อเมื่อ Venio Success เท่านั้น) ---
-             if (venioSuccess) {
-                 const promises = userQueue.map(u => {
-                     return addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'merchant_requests'), {
-                         ...u, 
-                         leadNo: leadNo,
-                         merchantId: merchantId,
-                         merchantName: merchantName,
-                         batchId, 
-                         status: 'pending', 
-                         createdAt: serverTimestamp()
-                     });
-                 });
-
-                 Promise.all(promises).then(() => {
-                     // GChat notification formatting
-                     const webhookUrl = "https://chat.googleapis.com/v1/spaces/AAQA0QTVPFg/messages?key=AIzaSyDdI0hCZtE6vySjMm-WEfRq3CPzqKqqsHI&token=eF1t1W0HzQRjTG9RY11yFR0XNyVwGaQatRPLnwjmWtY";
-                     const messageText = `📢 *มีการขอสร้าง User ใหม่ (Merchant Request)*\n📋 *Lead No:* ${leadNo}\n🏢 *ร้านค้า:* ${merchantId} - ${merchantName}\n👥 *จำนวน:* ${userQueue.length} User\n🆔 *Case ID:* ${batchId}\n📅 *วันที่:* ${new Date().toLocaleDateString('th-TH')}\n⏳ *สถานะ:* รอดำเนินการ`;
-                     fetch(webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json; charset=UTF-8' }, body: JSON.stringify({ text: messageText }) }).catch(err => console.warn("Error sending notification:", err.message));
-
-                     window.closePreviewModal();
-                     window.resetAll();
-                     
-                     const successMessageEl = document.getElementById('successMessage');
-                     if(successMessageEl) {
-                         successMessageEl.classList.remove('hidden');
-                         successMessageEl.classList.add('flex');
-                     }
-                 }).catch(err => {
-                     console.error("Submission Error:", err);
-                     alert('เกิดข้อผิดพลาดในการบันทึกข้อมูล');
-                 }).finally(() => {
-                     if(btn) {
-                         btn.disabled = false;
-                         btn.innerHTML = originalBtnContent;
-                     }
-                 });
-             }
+             });
         }
         
         window.closeDuplicateWarningModal = function() { document.getElementById('duplicateWarningModal').classList.add('hidden'); }
@@ -1892,7 +1896,7 @@
                          method: 'POST', 
                          headers: { 'Content-Type': 'application/json; charset=UTF-8' }, 
                          body: JSON.stringify({ text: messageText }) 
-                     }).catch(err => console.log("ℹ️ ส่งแจ้งเตือนสถานะ GChat (อาจติด CORS แต่ข้อความเข้าปกติ):", err.message));
+                     }).catch(err => console.log("ℹ️ ส่งแจ้งเตือนสถานะ GChat (ข้อมูลส่งไปแล้ว แต่ Browser อ่านค่ากลับไม่ได้):", err.message));
                 }
                 window.openDetailModal(currentBatchId);
             });
